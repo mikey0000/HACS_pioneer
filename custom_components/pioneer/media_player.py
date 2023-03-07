@@ -4,12 +4,8 @@ from __future__ import annotations
 import logging
 import socket
 import telnetlib
-import typing
-
-import voluptuous as vol
 
 from homeassistant.components.media_player import (
-    PLATFORM_SCHEMA,
     MediaPlayerDeviceClass,
     MediaPlayerEntity,
     MediaPlayerEntityFeature,
@@ -18,16 +14,13 @@ from homeassistant.components.media_player import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PORT, CONF_TIMEOUT
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
 from .const import (
     CONF_SOURCES,
     CONF_ZONES,
-    DEFAULT_NAME,
-    DEFAULT_PORT,
     DEFAULT_SOURCES,
-    DEFAULT_TIMEOUT,
     DEFAULT_ZONE,
     MAX_SOURCE_NUMBERS,
     MAX_VOLUME,
@@ -37,21 +30,17 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
-    {
-        vol.Required(CONF_HOST): cv.string,
-        vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
-        vol.Optional(CONF_PORT, default=DEFAULT_PORT): cv.port,
-        vol.Optional(CONF_TIMEOUT, default=DEFAULT_TIMEOUT): cv.socket_timeout,
-        vol.Optional(CONF_SOURCES, default=DEFAULT_SOURCES): {cv.string: cv.string},
-        vol.Required(CONF_ZONES, default=DEFAULT_ZONE): vol.All(
-            vol.Coerce(int), vol.Range(min=1, max=2)
-        ),
-    }
-)
+async def async_setup_platform(
+    hass: HomeAssistant,
+    config: ConfigType,
+    async_add_entities: AddEntitiesCallback,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> None:
+    """Set up the pioneer device."""
+    _LOGGER.warning("Configuration of the Pioneer platform in YAML is deprecated; ")
 
 
-def async_setup_entry(
+async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
@@ -66,11 +55,9 @@ def async_setup_entry(
             entry.data[CONF_SOURCES],
             zone,
         )
-        for zone in range(0, entry.data[CONF_ZONES])
+        for zone in range(1, entry.data[CONF_ZONES] + 1)
     ]
-
-    if pioneer[0].update():
-        async_add_entities(pioneer, True)
+    async_add_entities(pioneer, True)
 
 
 class PioneerDevice(MediaPlayerEntity):
@@ -118,11 +105,11 @@ class PioneerDevice(MediaPlayerEntity):
         self._attr_unique_id = f"pioneer_{zone}"
 
     @classmethod
-    def telnet_request(cls, telnet, command, expected_prefix):
+    def telnet_request(cls, telnet, command, expected_prefix) -> None:
         """Execute `command` and return the response."""
         try:
             telnet.write(command.encode("ASCII") + b"\r")
-        except telnetlib.socket.timeout:
+        except socket.timeout:
             _LOGGER.debug("Pioneer command %s timed out", command)
             return None
 
@@ -132,7 +119,6 @@ class PioneerDevice(MediaPlayerEntity):
             result = telnet.read_until(b"\r\n", timeout=0.2).decode("ASCII").strip()
             if result.startswith(expected_prefix):
                 return result
-
         return None
 
     def telnet_command(self, command) -> None:
@@ -149,36 +135,36 @@ class PioneerDevice(MediaPlayerEntity):
         except socket.timeout:
             _LOGGER.debug("Pioneer %s command %s timed out", self._name, command)
 
-    def update(self) -> bool:
+    def update(self) -> None:
         """Get the latest details from the device."""
         try:
             telnet = telnetlib.Telnet(self._host, self._port, self._timeout)
         except OSError:
             _LOGGER.warning("Pioneer %s refused connection", self._name)
-            return False
-        zone_commands = ZONE_COMMANDS[self._zone]
+            return
+        zone_commands = ZONE_COMMANDS.get(self._zone)
         pwstate = self.telnet_request(
             telnet,
-            zone_commands.get("POWER")["COMMAND"],
-            zone_commands.get("POWER")["PREFIX"],
+            zone_commands.get("POWER").get("COMMAND"),
+            zone_commands.get("POWER").get("PREFIX"),
         )
         if pwstate:
             self._pwstate = pwstate
 
         volume_str = self.telnet_request(
             telnet,
-            zone_commands.get("VOL")["COMMAND"],
-            zone_commands.get("VOL")["PREFIX"],
+            zone_commands.get("VOL").get("COMMAND"),
+            zone_commands.get("VOL").get("PREFIX"),
         )
         self._volume = float(volume_str[3:]) / MAX_VOLUME if volume_str else None
 
         muted_value = self.telnet_request(
             telnet,
-            typing.cast(typing.Dict[str, dict], zone_commands.get("MUTE")["COMMAND"]),
-            zone_commands.get("MUTE")["PREFIX"],
+            zone_commands.get("MUTE").get("COMMAND"),
+            zone_commands.get("MUTE").get("PREFIX"),
         )
         self._muted = (
-            (muted_value == zone_commands["MUTED_VALUE"]["COMMAND"])
+            (muted_value == zone_commands["MUTED_VALUE"].get("COMMAND"))
             if muted_value
             else None
         )
@@ -199,8 +185,8 @@ class PioneerDevice(MediaPlayerEntity):
 
         source_number = self.telnet_request(
             telnet,
-            zone_commands.get("SOURCE_NUM")["COMMAND"],
-            zone_commands.get("SOURCE_NUM")["PREFIX"],
+            zone_commands.get("SOURCE_NUM").get("COMMAND"),
+            zone_commands.get("SOURCE_NUM").get("PREFIX"),
         )
 
         if source_number:
@@ -209,7 +195,6 @@ class PioneerDevice(MediaPlayerEntity):
             self._selected_source = None
 
         telnet.close()
-        return True
 
     @property
     def name(self) -> str:
@@ -239,53 +224,59 @@ class PioneerDevice(MediaPlayerEntity):
         return self._muted
 
     @property
-    def source(self):
+    def source(self) -> str | None:
         """Return the current input source."""
         return self._selected_source
 
     @property
-    def source_list(self):
+    def source_list(self) -> list[str] | None:
         """List of available input sources."""
         return list(self._source_name_to_number)
 
     @property
-    def media_title(self):
+    def media_title(self) -> str | None:
         """Title of current playing media."""
         return self._selected_source
 
     def turn_off(self) -> None:
         """Turn off media player."""
-        self.telnet_command(ZONE_COMMANDS[self._zone].get("TURN_OFF")["COMMAND"])
+        self.telnet_command(
+            ZONE_COMMANDS.get(self._zone).get("TURN_OFF").get("COMMAND")
+        )
 
     def volume_up(self) -> None:
         """Volume up media player."""
-        self.telnet_command(ZONE_COMMANDS[self._zone].get("VOL_UP")["COMMAND"])
+        self.telnet_command(ZONE_COMMANDS.get(self._zone).get("VOL_UP").get("COMMAND"))
 
     def volume_down(self) -> None:
         """Volume down media player."""
-        self.telnet_command(ZONE_COMMANDS[self._zone].get("VOL_DOWN")["COMMAND"])
+        self.telnet_command(
+            ZONE_COMMANDS.get(self._zone).get("VOL_DOWN").get("COMMAND")
+        )
 
     def set_volume_level(self, volume: float) -> None:
         """Set volume level, range 0..1."""
         # 60dB max
-        vol_command = ZONE_COMMANDS[self._zone].get("VOL_LEVEL")["COMMAND"]
+        vol_command = ZONE_COMMANDS.get(self._zone).get("VOL_LEVEL").get("COMMAND")
         self.telnet_command(f"{round(volume * MAX_VOLUME):03}{vol_command}")
 
     def mute_volume(self, mute: bool) -> None:
         """Mute (true) or unmute (false) media player."""
         self.telnet_command(
-            ZONE_COMMANDS[self._zone].get("UNMUTE_VOL")["COMMAND"]
+            ZONE_COMMANDS.get(self._zone).get("UNMUTE_VOL").get("COMMAND")
             if mute
-            else ZONE_COMMANDS[self._zone].get("MUTE_VOL")["COMMAND"]
+            else ZONE_COMMANDS.get(self._zone).get("MUTE_VOL").get("COMMAND")
         )
 
     def turn_on(self) -> None:
         """Turn the media player on."""
-        self.telnet_command(ZONE_COMMANDS[self._zone].get("TURN_ON")["COMMAND"])
+        self.telnet_command(ZONE_COMMANDS.get(self._zone).get("TURN_ON").get("COMMAND"))
 
     def select_source(self, source: str) -> None:
         """Select input source."""
-        source_command = ZONE_COMMANDS[self._zone].get("SELECT_SOURCE")["COMMAND"]
+        source_command = (
+            ZONE_COMMANDS.get(self._zone).get("SELECT_SOURCE").get("COMMAND")
+        )
         self.telnet_command(
             f"{self._source_name_to_number.get(source)}{source_command}"
         )
